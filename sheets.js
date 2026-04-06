@@ -107,4 +107,61 @@ async function getStreakData() {
   });
 }
 
-module.exports = { markHabit, getTodayStatus, getStreakData, getTodayColumnIndex };
+async function getSheetId() {
+  const sheets = await getSheets();
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: config.SPREADSHEET_ID });
+  const sheet = meta.data.sheets.find(s => s.properties.title === config.SHEET_NAME);
+  return sheet ? sheet.properties.sheetId : 0;
+}
+
+async function addHabitRow(habit, index) {
+  const sheets = await getSheets();
+  const sheetId = await getSheetId();
+  const rowIndex = index + 2; // 0-indexed: row 0 = week, row 1 = header, habits start at row 2
+
+  // Insert a new row
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: config.SPREADSHEET_ID,
+    requestBody: {
+      requests: [{
+        insertDimension: {
+          range: { sheetId, dimension: 'ROWS', startIndex: rowIndex, endIndex: rowIndex + 1 },
+          inheritFromBefore: true,
+        },
+      }],
+    },
+  });
+
+  // Write the habit name and % formula
+  const lastDataCol = colLetter(1 + config.NUM_DAYS);
+  const row = rowIndex + 1; // 1-indexed for A1 notation
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: config.SPREADSHEET_ID,
+    requestBody: {
+      valueInputOption: 'USER_ENTERED',
+      data: [
+        { range: `${config.SHEET_NAME}!A${row}`, values: [[`${habit.emoji} ${habit.name}`]] },
+        { range: `${config.SHEET_NAME}!B${row}`, values: [[`=IFERROR(ROUND(COUNTIF(C${row}:${lastDataCol}${row},"✅")/${config.NUM_DAYS}*100,1)&"%","0%")`]] },
+      ],
+    },
+  });
+}
+
+async function removeHabitRow(index) {
+  const sheets = await getSheets();
+  const sheetId = await getSheetId();
+  const rowIndex = index + 2; // 0-indexed: row 0 = week, row 1 = header
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: config.SPREADSHEET_ID,
+    requestBody: {
+      requests: [{
+        deleteDimension: {
+          range: { sheetId, dimension: 'ROWS', startIndex: rowIndex, endIndex: rowIndex + 1 },
+        },
+      }],
+    },
+  });
+}
+
+module.exports = { markHabit, getTodayStatus, getStreakData, getTodayColumnIndex, addHabitRow, removeHabitRow };

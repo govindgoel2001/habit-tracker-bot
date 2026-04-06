@@ -1,8 +1,9 @@
 const TelegramBot = require('node-telegram-bot-api');
 const cron = require('node-cron');
 const config = require('./config');
-const { markHabit, getTodayStatus, getStreakData, getTodayColumnIndex } = require('./sheets');
+const { markHabit, getTodayStatus, getStreakData, getTodayColumnIndex, addHabitRow, removeHabitRow } = require('./sheets');
 const fs = require('fs');
+const path = require('path');
 
 const bot = new TelegramBot(config.TELEGRAM_BOT_TOKEN, { polling: true });
 
@@ -69,7 +70,9 @@ bot.onText(/\/start/, (msg) => {
     `• Check progress: /status\n` +
     `• See streaks: /streaks\n` +
     `• View habits: /habits\n` +
-    `• Today's checklist: /checklist\n\n` +
+    `• Today's checklist: /checklist\n` +
+    `• Add habit: /add habit name\n` +
+    `• Remove habit: /remove habit name\n\n` +
     `I'll remind you throughout the day. Let's go! 💪`,
     { parse_mode: 'Markdown' }
   );
@@ -124,6 +127,121 @@ bot.onText(/\/habits/, (msg) => {
 bot.onText(/\/checklist/, async (msg) => {
   saveChatId(msg.chat.id);
   await sendChecklist(msg.chat.id);
+});
+
+// --- ADD / REMOVE HABITS ---
+
+function saveConfig() {
+  const configPath = path.join(__dirname, 'config.js');
+  const obj = { ...config };
+  const startDate = obj.START_DATE instanceof Date
+    ? obj.START_DATE.toISOString().split('T')[0]
+    : String(obj.START_DATE);
+  delete obj.START_DATE;
+  let json = JSON.stringify(obj, null, 2);
+  // Remove closing brace and append START_DATE as a Date object
+  json = json.slice(0, -1) + `  "START_DATE": "__DATE__",\n}`;
+  const content = `module.exports = ${json};\n`.replace(
+    '"__DATE__"',
+    `new Date("${startDate}")`
+  );
+  fs.writeFileSync(configPath, content);
+}
+
+bot.onText(/\/add(?:\s+(.+))?/, (msg, match) => {
+  saveChatId(msg.chat.id);
+  const input = match[1];
+
+  if (!input) {
+    bot.sendMessage(msg.chat.id,
+      `*Add a new habit:*\n\n` +
+      `\`/add habit name | aliases | reminder hours | emoji\`\n\n` +
+      `*Examples:*\n` +
+      `\`/add Read 20 Pages | read, book, reading | 20,21 | 📚\`\n` +
+      `\`/add Cold Shower | cold shower, cold | 7,8 | 🥶\`\n\n` +
+      `_Only the name is required. Others have defaults._\n` +
+      `\`/add Drink Water\` ← works too`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  const parts = input.split('|').map(s => s.trim());
+  const name = parts[0];
+  const aliases = parts[1] ? parts[1].split(',').map(s => s.trim().toLowerCase()) : [name.toLowerCase()];
+  const reminderHours = parts[2] ? parts[2].split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n)) : [9];
+  const emoji = parts[3] || '✅';
+
+  // Check for duplicate
+  const existing = config.HABITS.find(h => h.name.toLowerCase() === name.toLowerCase());
+  if (existing) {
+    bot.sendMessage(msg.chat.id, `⚠️ *${existing.emoji} ${existing.name}* already exists.`, { parse_mode: 'Markdown' });
+    return;
+  }
+
+  const newHabit = { name, aliases, reminderHours, emoji };
+  config.HABITS.push(newHabit);
+  saveConfig();
+
+  // Add row to sheet
+  addHabitRow(newHabit, config.HABITS.length - 1).then(() => {
+    bot.sendMessage(msg.chat.id,
+      `✅ *Added:* ${emoji} ${name}\n` +
+      `_Aliases: ${aliases.join(', ')}_\n` +
+      `_Reminder: ${reminderHours.map(h => h + ':00').join(', ')}_\n\n` +
+      `Now tracking *${config.HABITS.length} habits*. Sheet updated!`,
+      { parse_mode: 'Markdown' }
+    );
+  }).catch(e => {
+    bot.sendMessage(msg.chat.id, `Habit added to bot but sheet error: ${e.message}\nRun \`npm run setup-sheet\` to fix.`);
+  });
+});
+
+bot.onText(/\/remove(?:\s+(.+))?/, (msg, match) => {
+  saveChatId(msg.chat.id);
+  const input = match[1];
+
+  if (!input) {
+    const lines = config.HABITS.map((h, i) => `${i + 1}. ${h.emoji} ${h.name}`);
+    bot.sendMessage(msg.chat.id,
+      `*Remove a habit:*\n\n` +
+      `\`/remove habit name\` or \`/remove number\`\n\n` +
+      `*Current habits:*\n${lines.join('\n')}\n\n` +
+      `_Example: \`/remove No Sweets\` or \`/remove 6\`_`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  let idx = -1;
+  const num = parseInt(input);
+  if (!isNaN(num) && num >= 1 && num <= config.HABITS.length) {
+    idx = num - 1;
+  } else {
+    idx = config.HABITS.findIndex(h => h.name.toLowerCase() === input.toLowerCase());
+    if (idx === -1) {
+      // Fuzzy match
+      idx = config.HABITS.findIndex(h => h.name.toLowerCase().includes(input.toLowerCase()));
+    }
+  }
+
+  if (idx === -1) {
+    bot.sendMessage(msg.chat.id, `⚠️ Couldn't find habit "${input}". Type /remove to see the list.`);
+    return;
+  }
+
+  const removed = config.HABITS.splice(idx, 1)[0];
+  saveConfig();
+
+  removeHabitRow(idx).then(() => {
+    bot.sendMessage(msg.chat.id,
+      `🗑️ *Removed:* ${removed.emoji} ${removed.name}\n\n` +
+      `Now tracking *${config.HABITS.length} habits*. Sheet updated!`,
+      { parse_mode: 'Markdown' }
+    );
+  }).catch(e => {
+    bot.sendMessage(msg.chat.id, `Habit removed from bot but sheet error: ${e.message}\nRun \`npm run setup-sheet\` to fix.`);
+  });
 });
 
 // --- NATURAL LANGUAGE HANDLER ---
