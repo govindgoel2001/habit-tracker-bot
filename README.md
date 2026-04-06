@@ -244,4 +244,4 @@ MIT — do whatever you want with it.
 
 ---
 
-Built with 🧠 by [Govind Goel](https://github.com/GovindGoel16) — inspired by [myhabitgame.com](https://myhabitgame.com)
+Built with 🧠 by [Govind Goel](https://github.com/GovindGoel16) with Claude Code
